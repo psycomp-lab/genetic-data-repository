@@ -1,18 +1,20 @@
 import requests
 import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import json
 import pandas as pd
 from io import StringIO
+from tools import drop_database, populate_database
 
 # Parametri per la connessione al database PostgreSQL
-db_params = {
+db_genetic_data_params = {
     'host': 'localhost',    # Indirizzo del server del database
     'database': 'genetic_data',      # Nome del database
     'user': 'postgres',     # Nome utente
     'password': 'maurizio',     # Password
     'port' : 5432           # Porta di connessione
 }
-
+    
 # Funzione per scaricare e processare i dati di espressione da GDC
 def download_and_process_expression_data(db_params):
     try:
@@ -82,11 +84,13 @@ def download_and_process_expression_data(db_params):
             # Puoi aggiungere altri campi che danno più info relative al file
             "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id",
             "format": "JSON",
-            "size": "2",  # Numero massimo di file da scaricare per richiesta
+            "size": "10",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
         
+        print("sending request... ", end="")
         response = requests.get(gdc_api_url, params=params)
+        print("got response")
 
         # Definizioni delle query SQL utilizzate nel codice
 
@@ -104,10 +108,16 @@ def download_and_process_expression_data(db_params):
         inserisci_espressione_proteica = "INSERT INTO protein_expression_file VALUES (%s, %s, %s)"
 
     
-        data = response.json()
+        hits_data = json.loads(response.content.decode("utf-8"))["data"]["hits"]
+        
+        print("received", len(hits_data), "hits")
+        
+        skip_genes = True
+        skip_genes = False
 
         # Elaborazione dei dati e inserimento nel database
-        for file_info in json.loads(response.content.decode("utf-8"))["data"]["hits"]:
+        for hit_n, file_info in enumerate(hits_data):
+            print("hit", hit_n + 1, "of", len(hits_data))
             file_id = file_info["id"]
             if len(file_info["cases"]) > 1:
                 print("found a file with more than one case!")
@@ -148,20 +158,21 @@ def download_and_process_expression_data(db_params):
                     connection.commit()
                     
                     if type_id == 1:
-                        for data_row in expression_data:
-                            # Inserimento dei dati di espressione genica nel database
-                            gene_id = data_row["gene_id"]
-                            stranded_first = data_row["stranded_first"]
-                            stranded_second = data_row["stranded_second"]
+                        if not skip_genes:
+                            for data_row in expression_data:
+                                # Inserimento dei dati di espressione genica nel database
+                                gene_id = data_row["gene_id"]
+                                stranded_first = data_row["stranded_first"]
+                                stranded_second = data_row["stranded_second"]
 
-                            # Verifica se il tipo di gene è già presente nel database
-                            cursor.execute(cerca_tipo_gene, (data_row["gene_type"],))
-                            gene_type_id = cursor.fetchone()[0]
-                            # Inserisci il gene nel database
-                            cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
-                            
-                            if stranded_first != 0 and stranded_second != 0: cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
-                        connection.commit()
+                                # Verifica se il tipo di gene è già presente nel database
+                                cursor.execute(cerca_tipo_gene, (data_row["gene_type"],))
+                                gene_type_id = cursor.fetchone()[0]
+                                # Inserisci il gene nel database
+                                cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
+                                
+                                if stranded_first != 0 and stranded_second != 0: cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
+                            connection.commit()
                     elif type_id == 2:
                         # Inserimento dei dati di espressione proteica nel database
                         for data_row in expression_data:
@@ -187,7 +198,9 @@ def download_and_process_expression_data(db_params):
         print(f"Errore nel database: {db_error}")
 
     # Gestione degli errori di richiesta HTTP
-    except requests.RequestException as request_error: print(f"Errore nella richiesta HTTP: {request_error}")
+    except requests.RequestException as request_error:
+        print(f"Errore nella richiesta HTTP: {request_error}")
+        connection.commit()
 
     except Exception as error:
         # Gestione generica degli errori
@@ -214,7 +227,9 @@ def project(id, cursor):
         "pretty": "true"
     }
 
+    print("requesting project... ", end="")
     response = requests.get(project_url, params=params)
+    print("got response")
 
     if response.status_code == 200:
         data = json.loads(response.content.decode("utf-8"))["data"]
@@ -240,7 +255,10 @@ def cases(id, project_id, cursor):
         "format": "JSON",
         "pretty": "true"
     }
+    
+    print("requesting case... ", end="")
     response = requests.get(cases_url, params=params)
+    print("got response")
 
     if response.status_code == 200:
         data = json.loads(response.content.decode("utf-8"))["data"]
@@ -264,6 +282,28 @@ def cases(id, project_id, cursor):
     else: 
         print(f"Errore durante il download del caso: {response.status_code}")
 
+def sample_print(sample):
+    if "sample_type" in sample:
+        print("sample_type:      ", sample["sample_type"])
+    else:
+        print("sample_type not present!")
+    if "sample_type_id" in sample:
+        print("sample_type_id:   ", sample["sample_type_id"])
+    else:
+        print("sample_type_id not present!")
+    if "tumor_code_id" in sample:
+        print("tumor_code_id:    ", sample["tumor_code_id"])
+    else:
+        print("tumor_code_id not present!")
+    if "tumor_code" in sample:
+        print("tumor_code:       ", sample["tumor_code"])
+    else:
+        print("tumor_code not present!")
+    if "tumor_descriptor" in sample:
+        print("tumor_descriptor: ", sample["tumor_descriptor"], end="\n\n")
+    else:
+        print("tumor_descriptor not present!", end="\n\n")
+        
 # Funzione per inserire informazioni sui campioni nel database
 def samples(samples, case_id, cursor):
     inserisci_biospecie = "INSERT INTO biospecimen VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING;"
@@ -276,6 +316,9 @@ def samples(samples, case_id, cursor):
     inserisci_slide = "INSERT INTO slide VALUES (%s, %s)"
 
     for sample in samples:
+        
+        # sample_print(sample)
+        # why is the submitter id used as sample it
         sample_id = sample["submitter_id"]
         
         if "tumor_code_id" in sample and sample["tumor_code_id"] != None: 
@@ -327,7 +370,10 @@ def samples(samples, case_id, cursor):
 # Funzione per scaricare e processare un file specifico
 def download_and_process_file(file_id, data_id):
     file_url = "https://api.gdc.cancer.gov/data/" + file_id
+    
+    print("requesting file... ", end="")
     response = requests.get(file_url)
+    print("got response")
 
     if response.status_code == 200:
         # Elabora i dati dal file scaricato
@@ -341,4 +387,12 @@ def download_and_process_file(file_id, data_id):
         print(f"Errore durante il download del file: {response.status_code}")
         return []
 
-download_and_process_expression_data(db_params)
+if __name__ == "__main__":
+    answer = input("do you want to delete the database? (y/N) ")
+    if answer == "y":
+        answer = input("are you sure? (y/N): ")
+        if answer == "y":
+            drop_database(db_genetic_data_params, "genetic_data")
+            populate_database(db_genetic_data_params, "genetic_data", "../db/init_db_genetic_data.sql")
+            
+    download_and_process_expression_data(db_genetic_data_params)

@@ -36,3 +36,4 @@ delete from public.protein;
 delete from public.protein_expression_file;
 delete from public.sample_type;
 delete from public.tumor;
+delete from public.disease;
