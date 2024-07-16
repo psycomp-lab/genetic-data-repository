@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.analysis
     data_category integer,
     data_type integer,
     experimental_strategy integer,
+    sample_id text COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT "File_pkey" PRIMARY KEY (file_id)
 );
 
@@ -348,6 +349,11 @@ ALTER TABLE IF EXISTS public.analysis
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
+ALTER TABLE IF EXISTS public.analysis
+    ADD CONSTRAINT "Sample_id" FOREIGN KEY (sample_id)
+    REFERENCES public.sample (sample_id) MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
 
 ALTER TABLE IF EXISTS public.analysis_entity
     ADD CONSTRAINT "File" FOREIGN KEY (analysis)

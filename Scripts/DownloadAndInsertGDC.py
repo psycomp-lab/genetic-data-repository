@@ -41,14 +41,23 @@ def download_and_process_expression_data(db_params):
         filters = {
             "op": "and",
             "content": [
-                # Filtro riguardante il sito primario della malattia che vogliamo analizzare
+                #Filtro riguardante il sito primario della malattia che vogliamo analizzare
                 {
                     "op": "=",
                     "content": {
                         "field": "cases.primary_site",
-                        "value": "Bladder"
+                        "value": "Breast"
                     }
                 },
+
+                {
+                    "op": "=",
+                    "content": {
+                        "field": "cases.samples.sample_type",
+                        "value": "Solid Tissue Normal"
+                    }
+                },
+
 
                 # Filtro riguardante il tipo di dati che vogliamo analizzare
                 {
@@ -82,9 +91,9 @@ def download_and_process_expression_data(db_params):
         params = {
             "filters": json.dumps(filters),
             # Puoi aggiungere altri campi che danno più info relative al file
-            "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id",
+            "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id,cases.samples.sample_id,cases.samples.sample_type",
             "format": "JSON",
-            "size": "10",  # Numero massimo di file da scaricare per richiesta
+            "size": "1000",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
         
@@ -100,7 +109,7 @@ def download_and_process_expression_data(db_params):
         cerca_tipo_categoria_strategia = "SELECT type_id, category_id, strategy_id FROM data_type, data_category, experimental_strategy WHERE type = %s AND category = %s AND strategy = %s"
         cerca_tipo_gene = "SELECT type_id FROM gene_type WHERE type = %s"
 
-        inserisci_analisi = "INSERT INTO analysis VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        inserisci_analisi = "INSERT INTO analysis VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
         inserisci_entita_analisi = "INSERT INTO analysis_entity VALUES (%s, %s)"
         inserisci_espressione_genica = "INSERT INTO gene_expression_file VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         inserisci_gene = "INSERT INTO gene VALUES (%s, %s, %s) ON CONFLICT (gene_id) DO NOTHING;"
@@ -113,7 +122,7 @@ def download_and_process_expression_data(db_params):
         print("received", len(hits_data), "hits")
         
         skip_genes = True
-        skip_genes = False
+        # skip_genes = False
 
         # Elaborazione dei dati e inserimento nel database
         for hit_n, file_info in enumerate(hits_data):
@@ -148,8 +157,10 @@ def download_and_process_expression_data(db_params):
                     type_category_strategy_id = cursor.fetchone()
                     type_id = type_category_strategy_id[0]
 
+                    sample_id = case['samples'][0]['sample_id']
                     # Inserisci i dettagli del file nel database
-                    cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2]))
+
+                    cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_id))
                     
                     # Scarica i dati dal file e inseriscili nel database
                     expression_data = download_and_process_file(file_id, type_id)
@@ -209,6 +220,7 @@ def download_and_process_expression_data(db_params):
 
     finally:
         # Ripristina l'autocommit
+        connection.rollback()
         connection.autocommit = True
 
         # Chiudi la connessione
@@ -249,9 +261,24 @@ def cases(id, project_id, cursor):
 
     inserisci_caso = "INSERT INTO public.case VALUES (%s, %s, %s, %s, %s, %s, %s, %s);"
 
+    # filters = {
+    #     "op": "and",
+    #     "content": [
+    #
+    #         {
+    #             "op": "=",
+    #             "content": {
+    #                 "field": "cases.samples.sample_type",
+    #                 "value": "Solid Tissue Normal"
+    #             }
+    #         }
+    #     ]
+    # }
+
     params = {
+        # "filters": json.dumps(filters),
         #Puoi aggiungere altri campi che danno più info relative al caso
-        "fields": "submitter_id,demographic.ethnicity,demographic.gender,demographic.race,demographic.vital_status,primary_site,disease_type,samples.submitter_id,samples.sample_type,samples.sample_type_id,samples.tumor_code,samples.tumor_code_id,samples.tumor_descriptor,samples.portions.submitter_id,samples.portions.analytes.submitter_id,samples.portions.analytes.concentration,samples.portions.analytes.aliquots.submitter_id,samples.portions.analytes.aliquots.concentration", #samples.portions.slides.submitter_id
+        "fields": "submitter_id,demographic.ethnicity,demographic.gender,demographic.race,demographic.vital_status,primary_site,disease_type,samples.submitter_id,samples.sample_type,samples.sample_id,samples.sample_type_id,samples.tumor_code,samples.tumor_code_id,samples.tumor_descriptor,samples.portions.submitter_id,samples.portions.analytes.submitter_id,samples.portions.analytes.concentration,samples.portions.analytes.aliquots.submitter_id,samples.portions.analytes.aliquots.concentration", #samples.portions.slides.submitter_id
         "format": "JSON",
         "pretty": "true"
     }
@@ -318,8 +345,8 @@ def samples(samples, case_id, cursor):
     for sample in samples:
         
         # sample_print(sample)
-        # why is the submitter id used as sample it
-        sample_id = sample["submitter_id"]
+        # why is the submitter id used as sample id?
+        sample_id = sample["sample_id"]
         
         if "tumor_code_id" in sample and sample["tumor_code_id"] != None: 
             tumor_code = sample["tumor_code_id"]
