@@ -22,6 +22,21 @@ to_db = {
     'port' : 5432           # Porta di connessione
 }
 
+def get_measurement_id(name, unit, to_cursor):
+    get_measurement_id = "SELECT measurement_id FROM measurement_type where name = '{}' AND unit = '{}';"
+    add_measurement_id = "INSERT INTO measurement_type (name, unit) VALUES ('{}', '{}') ON CONFLICT (name, unit) DO NOTHING;"
+
+    # add the measurement type
+    query = add_measurement_id.format(name, unit)
+    to_cursor.execute(query)
+    
+    # and get its id
+    query = get_measurement_id.format(name, unit)
+    to_cursor.execute(query)
+    measurement_id = to_cursor.fetchone()[0]
+    
+    return measurement_id
+
 def copy_to_ML_database(from_db_params, to_db_params):
     try:
         from_connection = psycopg2.connect(**from_db_params)
@@ -37,17 +52,16 @@ def copy_to_ML_database(from_db_params, to_db_params):
 
         get_gene_expressions = "SELECT * from gene_expression_file where analysis = '{}'"
         
-        get_sample_id = "SELECT sample_id FROM sample_type WHERE analysis_id = '{}'"
-        add_sample_id = "INSERT INTO sample_type (analysis_id) VALUES ('{}') ON CONFLICT (analysis_id) DO NOTHING;"
+        get_sample_id = "SELECT sample_id FROM sample_type WHERE original_sample_id = '{}'"
+        add_sample_id = "INSERT INTO sample_type (original_sample_id) VALUES ('{}') ON CONFLICT (original_sample_id) DO NOTHING;"
         
-        get_measurement_id = "SELECT measurement_id FROM measurement_type where name = '{}' AND unit = '{}';"
-        add_measurement_id = "INSERT INTO measurement_type (name, unit) VALUES ('{}', '{}') ON CONFLICT (name, unit) DO NOTHING;"
-
+        get_sample_type = "SELECT type FROM sample WHERE sample_id = '{}'"
+        
         add_measurement = "INSERT INTO measurement (sample_id, measurement_id, value) VALUES ({}, {}, '{}')"
         
-        get_analysis_from = "SELECT * FROM analysis_entity"
+        get_analysis_from = "SELECT file_id, sample_id FROM analysis"
         
-        get_analysis_to = "SELECT * FROM sample_type WHERE analysis_id = '{}'"
+        get_sample_to = "SELECT * FROM sample_type WHERE original_sample_id = '{}'"
         
         genes = set()
         
@@ -55,50 +69,71 @@ def copy_to_ML_database(from_db_params, to_db_params):
         from_cursor.execute(query)
         
         all_analysis = []
+        all_samples = []
         for analysis_iter in from_cursor:
             all_analysis.append(analysis_iter[0])
-        
-        for analysis_iter in all_analysis:
+            all_samples.append(analysis_iter[1])
             
-            query = get_analysis_to.format(analysis_iter)
+        # for each pair (analysis, sample)
+        for index in range(len(all_samples)):
+            
+            analysis_iter = all_analysis[index]
+            samples_iter = all_samples[index]
+            
+            # get the sample id in the new database, if exists
+            query = get_sample_to.format(samples_iter)
             to_cursor.execute(query)
             
+            # if it does not exist, add all the gene expression values for that sample
             if to_cursor.fetchone() is None:
                 
+                # get the gene expression values
                 query = get_gene_expressions.format(analysis_iter)
                 from_cursor.execute(query)
-        
+
+                # for each of them
                 for gene_expression in from_cursor:
                     analysis = gene_expression[0]
                     gene = gene_expression[1]
                     tpm = gene_expression[2]
                     
-                    genes.add(gene)
+                    # genes.add(gene)
 
-                    query = get_sample_id.format(analysis)
+                    # check if the sample exists
+                    query = get_sample_id.format(samples_iter)
                     to_cursor.execute(query)
                     sample_id = to_cursor.fetchone()
                     
+                    # if it does not exist, add it and get its id
                     if sample_id is None:
-                        query = add_sample_id.format(analysis)
+                        query = add_sample_id.format(samples_iter)
                         to_cursor.execute(query)
-                        query = get_sample_id.format(analysis)
+                        query = get_sample_id.format(samples_iter)
                         to_cursor.execute(query)
                         sample_id = to_cursor.fetchone()
                         
                     sample_id = sample_id[0]
                     
-                    query = add_measurement_id.format(gene, "tpm")
-                    to_cursor.execute(query)
+                    measurement_id = get_measurement_id(gene, "tpm", to_cursor)
                     
-                    query = get_measurement_id.format(gene, "tpm")
-                    to_cursor.execute(query)
-                    measurement_id = to_cursor.fetchone()[0]
-                    
+                    # add the measurement itself
                     query = add_measurement.format(int(sample_id), int(measurement_id), tpm)
                     to_cursor.execute(query)
+                
+                # finally, add the sample type
+                
+                # get the sample type
+                query = get_sample_type.format(samples_iter)
+                from_cursor.execute(query)
+                sample_type = from_cursor.fetchone()[0]
+                
+                measurement_id = get_measurement_id("sample_type", "int", to_cursor)
+                
+                query = add_measurement.format(int(sample_id), int(measurement_id), sample_type)
+                to_cursor.execute(query)
+                
             else:
-                print("analysis", analysis_iter, "already present in the db")
+                print("analysis", analysis_iter, "sample", samples_iter, "already present in the db")
             to_connection.commit()
             from_connection.commit()
         
