@@ -128,9 +128,12 @@ def download_and_process_expression_data(db_params):
         for hit_n, file_info in enumerate(hits_data):
             print("hit", hit_n + 1, "of", len(hits_data))
             file_id = file_info["id"]
-            if len(file_info["cases"]) > 1:
-                print("found a file with more than one case!")
-            for case in file_info["cases"]:
+
+            all_cases = file_info["cases"]
+            if len(all_cases) > 1:
+                print("found a file with more than one case!!!!!!!")
+
+            for case in all_cases:
                 project_id = case["project"]["project_id"]
 
                 # Verifica se il progetto è già presente nel database
@@ -146,7 +149,7 @@ def download_and_process_expression_data(db_params):
                 result = cursor.fetchone()
                 if result[0] == 0: 
                     # Se il caso non è presente, esegui la funzione cases() per inserirlo
-                    cases(case["case_id"], project_id, cursor)
+                    samples_uuids = cases(case["case_id"], project_id, cursor)
                     connection.commit()
 
                 # Verifica se il file è già presente nel database
@@ -157,13 +160,18 @@ def download_and_process_expression_data(db_params):
                     type_category_strategy_id = cursor.fetchone()
                     type_id = type_category_strategy_id[0]
 
-                    sample_id = case['samples'][0]['sample_id']
+                    # !!!!!!!!!!!!!!! only the first one?!!?!
+                    all_samples = case['samples']
+                    if len(all_samples) > 1:
+                        print("found one case with many samples!!!!")
+
+                    sample_id = all_samples[0]['sample_id']
                     # Inserisci i dettagli del file nel database
 
                     cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_id))
                     
                     # Scarica i dati dal file e inseriscili nel database
-                    expression_data = download_and_process_file(file_id, type_id)
+                    expression_data = download_and_process_file(file_id, type_id, samples_uuids)
 
                     for entity in file_info["associated_entities"]: cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
                     connection.commit()
@@ -282,10 +290,14 @@ def cases(id, project_id, cursor):
         "format": "JSON",
         "pretty": "true"
     }
-    
+
+    samples_uuids = None
+
     print("requesting case... ", end="")
     response = requests.get(cases_url, params=params)
     print("got response")
+
+
 
     if response.status_code == 200:
         data = json.loads(response.content.decode("utf-8"))["data"]
@@ -304,10 +316,11 @@ def cases(id, project_id, cursor):
 
         if "demographic" in data: cursor.execute(inserisci_caso, (case_id, data["demographic"]["ethnicity"], data["demographic"]["gender"], data["demographic"]["race"], data["demographic"]["vital_status"], project_id, site[0], disease[0]))
         else: cursor.execute(inserisci_caso, (case_id, None, None, None, None, project_id, site[0], disease[0]))
-        samples(data["samples"], case_id, cursor)
+        samples_uuids = samples(data["samples"], case_id, cursor)
         print("Caso inserito nel database")
     else: 
         print(f"Errore durante il download del caso: {response.status_code}")
+    return samples_uuids
 
 def sample_print(sample):
     if "sample_type" in sample:
@@ -341,9 +354,9 @@ def samples(samples, case_id, cursor):
     inserisci_analita = "INSERT INTO analyte VALUES (%s, %s, %s) ON CONFLICT (analyte_id) DO NOTHING;"
     inserisci_aliquota = "INSERT INTO aliquote VALUES (%s, %s, %s) ON CONFLICT (aliquote_id) DO NOTHING;"
     inserisci_slide = "INSERT INTO slide VALUES (%s, %s)"
-
+    samples_uuids = []
     for sample in samples:
-        
+        samples_uuids.append("uuid:v1:" + sample["sample_id"])
         # sample_print(sample)
         # why is the submitter id used as sample id?
         sample_id = sample["sample_id"]
@@ -387,6 +400,8 @@ def samples(samples, case_id, cursor):
 
                                 cursor.execute(inserisci_biospecie, (aliquote_id, case_id, 4))
                                 cursor.execute(inserisci_aliquota, (aliquote_id, analyte_id, concentration))
+    return samples_uuids
+
                 #if "slides" in portion:
                     #for slide in portion["slides"]:
                         #slide_id = slide["submitter_id"]
@@ -395,9 +410,55 @@ def samples(samples, case_id, cursor):
                         #cursor.execute(inserisci_slide, (slide_id, sample_id))
 
 # Funzione per scaricare e processare un file specifico
-def download_and_process_file(file_id, data_id):
-    file_url = "https://api.gdc.cancer.gov/data/" + file_id
-    
+def download_and_process_file(file_id, data_id, samples_uuids):
+    '''
+    # Set the sample ID
+    sample_id = "your_sample_id_here"
+
+    # Set the API endpoint and parameters
+    url = "https://api.gdc.cancer.gov/files"
+    params = {
+        "sample_id": sample_id,
+        "data_category": "Transcriptome Profiling"
+    }
+
+    # Send the request to retrieve the list of files
+    response = requests.get(url, params=params)
+
+    # Iterate over the response and retrieve all the file data
+    for file in response.json()["data"]["hits"]:
+        file_id = file["file_id"]
+        file_name = file["file_name"]
+        file_size = file["file_size"]
+        data_type = file["data_type"]
+        data_category = file["data_category"]
+
+        # Retrieve the file data
+        file_url = f"https://api.gdc.cancer.gov/files/{file_id}"
+        file_response = requests.get(file_url, params={"download": "true"})
+
+        # Save the file data to a file
+        with open(f"{file_name}.tsv", "w") as f:
+            f.write(file_response.text)
+
+        print(f"Retrieved file {file_name} ({file_size} bytes) with data type {data_type} and category {data_category}")
+
+    '''
+
+
+    # file_url = "https://api.gdc.cancer.gov/data/" + file_id
+
+    # Set API endpoint and parameters
+    file_url = "https://api.gdc.cancer.gov/data"
+    params = {
+        "data_type": "Gene Expression Quantification",
+        "sample_ids": ",".join(samples_uuids),
+        "format": "TSV"
+    }
+
+    # Send GET request
+    response = requests.post(file_url, params=params)
+
     print("requesting file... ", end="")
     response = requests.get(file_url)
     print("got response")
