@@ -163,8 +163,9 @@ def download_and_process_expression_data(db_params):
                 else:
                     all_samples = download_case_samples(case["case_id"])["samples"]
 
+                sample_submitter_id = None
                 if all_samples != []:
-                    add_sample(all_samples, case["case_id"], sample_id, file_id, cursor)
+                    sample_submitter_id = add_sample(all_samples, case["case_id"], sample_id, file_id, cursor)
                     connection.commit()
 
                 # Verifica se il file è già presente nel database
@@ -177,8 +178,9 @@ def download_and_process_expression_data(db_params):
 
                     # Inserisci i dettagli del file nel database
 
-                    cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_id))
+                    cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_submitter_id))
 
+                    cursor.execute(inserisci_entita_analisi, (file_id, sample_submitter_id))
                     for entity in file_info["associated_entities"]:
                         cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
                     connection.commit()
@@ -263,6 +265,7 @@ def add_project(target_project_id, cursor):
     response = requests.get(project_url, params=params)
     print("got response")
 
+
     if response.status_code == 200:
         data = json.loads(response.content.decode("utf-8"))["data"]
 
@@ -285,15 +288,24 @@ def download_case_samples(target_case_id):
         "pretty": "true"
     }
 
-    print("requesting case", cases_url, end=" ")
-    response = requests.get(cases_url, params=params)
-    print("got response")
+    tries_count = 0
 
-    if response.status_code == 200:
-        data = json.loads(response.content.decode("utf-8"))["data"]
-        return data
-    else:
+    while tries_count < 3:
+        try:
+            print("requesting case", cases_url, end=" ")
+            response = requests.get(cases_url, params=params)
+            print("got response")
+            if response.status_code == 200:
+                data = json.loads(response.content.decode("utf-8"))["data"]
+                return data
+            else:
+                return []
+            # Gestione degli errori di richiesta HTTP
+        except requests.RequestException as request_error:
+            print(f"Errore nella richiesta HTTP: {request_error}")
+            tries_count += 1
         return []
+
 
 # Funzione per inserire un nuovo caso nel database
 def add_case(target_case_id, project_id, cursor):
@@ -331,7 +343,7 @@ def add_case(target_case_id, project_id, cursor):
         return data["samples"]
 
     else: 
-        print(f"Errore durante il download del caso: {response.status_code}")
+        print(f"Errore durante il download del caso", target_case_id)
         return []
 
 def sample_print(sample):
@@ -366,8 +378,12 @@ def add_sample(samples_list, case_id, target_sample_id, target_file_id, cursor):
     inserisci_analita = "INSERT INTO analyte VALUES (%s, %s, %s) ON CONFLICT (analyte_id) DO NOTHING;"
     inserisci_aliquota = "INSERT INTO aliquote VALUES (%s, %s, %s) ON CONFLICT (aliquote_id) DO NOTHING;"
     select_sample = "SELECT * FROM sample WHERE sample_id = %s"
+    get_sample_type_id = "SELECT type_id FROM sample_type WHERE type = %s"
     inserisci_slide = "INSERT INTO slide VALUES (%s, %s)"
     print("*** adding sample", target_sample_id)
+
+    sample_submitter_id = None
+
     for sample in samples_list:
 
         # sample_print(sample)
@@ -386,18 +402,24 @@ def add_sample(samples_list, case_id, target_sample_id, target_file_id, cursor):
                 type_id = sample["sample_type_id"]
                 cursor.execute(inserisci_tipo_campione, (type_id, sample["sample_type"]))
             else:
-                type_id = None
+                cursor.execute(get_sample_type_id, (sample["sample_type"],))
+                type_id = cursor.fetchone()
+                if type_id is not None:
+                    type_id = type_id[0]
+                else:
+                    type_id = None
 
-            cursor.execute(inserisci_biospecie, (sample_id, case_id, 1))
+            sample_submitter_id = sample['submitter_id']
+            cursor.execute(inserisci_biospecie, (sample_submitter_id, case_id, 1))
 
-            cursor.execute(select_sample, (sample_id,))
+            cursor.execute(select_sample, (sample_submitter_id,))
             result = cursor.fetchone()
             if result is None:
-                cursor.execute(inserisci_campione, (sample_id, type_id, tumor_code))
+                cursor.execute(inserisci_campione, (sample_submitter_id, type_id, tumor_code))
             else:
-                print("******** sample", sample_id, "already present!")
+                print("******** sample", sample_submitter_id, "already present!")
 
-            print("added sample", sample_id)
+            print("added sample", sample_submitter_id)
             if "portions" in sample:
                 for portion in sample["portions"]:
                     if "submitter_id" in portion:
@@ -405,7 +427,7 @@ def add_sample(samples_list, case_id, target_sample_id, target_file_id, cursor):
                     else: portion_id = 1
 
                     cursor.execute(inserisci_biospecie, (portion_id, case_id, 2))
-                    cursor.execute(inserisci_porzione, (portion_id, sample_id))
+                    cursor.execute(inserisci_porzione, (portion_id, sample_submitter_id))
                     if "analytes" in portion:
                         for analyte in portion["analytes"]:
                             if "submitter_id" in analyte:
@@ -435,7 +457,7 @@ def add_sample(samples_list, case_id, target_sample_id, target_file_id, cursor):
                             #cursor.execute(inserisci_slide, (slide_id, sample_id))
 
 
-
+    return sample_submitter_id
 # Funzione per scaricare e processare un file specifico
 def download_and_process_gene_expression_file(file_id, datatype_id):
 
