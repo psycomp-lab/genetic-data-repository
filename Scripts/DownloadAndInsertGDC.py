@@ -14,7 +14,59 @@ db_genetic_data_params = {
     'password': 'maurizio',     # Password
     'port' : 5432           # Porta di connessione
 }
-    
+
+overall_filters = {
+    "op": "and",
+    "content": [
+        #Filtro riguardante il sito primario della malattia che vogliamo analizzare
+        {
+            "op": "=",
+            "content": {
+                "field": "cases.primary_site",
+                "value": "Breast"
+            }
+        },
+
+        # {
+        #     "op": "in",
+        #     "content": {
+        #         "field": "cases.samples.sample_type",
+        #         "value": ["Primary Solid Tumor", "Metastatic", "Blood Derived Normal", "Solid Tissue Normal",
+        #                   "Human Tumor Original Cells", "Primary Blood Derived Cancer - Peripheral Blood",
+        #                   "Primary Blood Derived Cancer - Bone Marrow", "Additional - New Primary",
+        #                   "Next Generation Cancer Model", "Expanded Next Generation Cancer Model"]
+        #     }
+        # },
+
+
+        # Filtro riguardante il tipo di dati che vogliamo analizzare
+        {
+            "op": "in",
+            "content": {
+                "field": "data_type",
+                "value": ["Gene Expression Quantification"]
+            }
+        },
+
+        # Filtro riguardante l'accesso dei dati
+        {
+            "op": "=",
+            "content": {
+                "field": "access",
+                "value": "open"
+            }
+        },
+
+        # Filtro riguardante il formato del file su cui è riportata l'analisi
+        {
+            "op": "=",
+            "content": {
+                "field": "data_format",
+                "value": "TSV"
+            }
+        }
+    ]
+    }
 # Funzione per scaricare e processare i dati di espressione da GDC
 def download_and_process_expression_data(db_params):
     try:
@@ -38,66 +90,18 @@ def download_and_process_expression_data(db_params):
         #file_ids = [result[0] for result in results]
 
         # Scaricamento dei dati
-        filters = {
-            "op": "and",
-            "content": [
-                #Filtro riguardante il sito primario della malattia che vogliamo analizzare
-                {
-                    "op": "=",
-                    "content": {
-                        "field": "cases.primary_site",
-                        "value": "Breast"
-                    }
-                },
 
-                # {
-                #     "op": "=",
-                #     "content": {
-                #         "field": "cases.samples.sample_type",
-                #         "value": "Solid Tissue Normal"
-                #     }
-                # },
-
-
-                # Filtro riguardante il tipo di dati che vogliamo analizzare
-                {
-                    "op": "in",
-                    "content": {
-                        "field": "data_type",
-                        "value": ["Gene Expression Quantification"]
-                    }
-                },
-
-                # Filtro riguardante l'accesso dei dati
-                {
-                    "op": "=",
-                    "content": {
-                        "field": "access",
-                        "value": "open"
-                    }
-                },
-
-                # Filtro riguardante il formato del file su cui è riportata l'analisi
-                {
-                    "op": "=",
-                    "content": {
-                        "field": "data_format",
-                        "value": "TSV"
-                    }
-                }
-            ]
-        }
 
         params = {
-            "filters": json.dumps(filters),
+            "filters": json.dumps(overall_filters),
             # Puoi aggiungere altri campi che danno più info relative al file
-            "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id,cases.samples.sample_id,cases.samples.sample_type",
+            "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id,cases.samples,cases.samples.sample_id,cases.samples.sample_type,files.cases.samples",
             "format": "JSON",
-            "size": "2",  # Numero massimo di file da scaricare per richiesta
+            "size": "1000000",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
         
-        print("sending request... ", end="")
+        print("sending request", gdc_api_url, end=" ")
         response = requests.get(gdc_api_url, params=params)
         print("got response")
 
@@ -122,10 +126,10 @@ def download_and_process_expression_data(db_params):
         print("received", len(hits_data), "hits")
         
         skip_genes = True
-        skip_genes = False
+        # skip_genes = False
 
         # Elaborazione dei dati e inserimento nel database
-        for hit_n, file_info in enumerate(hits_data):
+        for hit_n, file_info in enumerate(hits_data[:]):
             print("hit", hit_n + 1, "of", len(hits_data))
             file_id = file_info["id"]
 
@@ -141,15 +145,26 @@ def download_and_process_expression_data(db_params):
                 result = cursor.fetchone()
                 if result[0] == 0: 
                     # Se il progetto non è presente, esegui la funzione project() per inserirlo
-                    project(project_id, cursor)
+                    add_project(project_id, cursor)
                     connection.commit()
 
+                # there is always one sample per case, as we are downloading files
+                # a file is always associated to a sample
+                sample_id = case["samples"][0]['sample_id']
+
                 # Verifica se il caso è già presente nel database
-                cursor.execute(cerca_caso, (case["submitter_id"],))
+                # cursor.execute(cerca_caso, (case["submitter_id"],))
+                cursor.execute(cerca_caso, (case["case_id"],))
                 result = cursor.fetchone()
-                if result[0] == 0: 
-                    # Se il caso non è presente, esegui la funzione cases() per inserirlo
-                    samples_uuids = cases(case["case_id"], project_id, cursor)
+
+                if result[0] == 0:
+                    all_samples = add_case(case["case_id"], project_id, cursor)
+                    connection.commit()
+                else:
+                    all_samples = download_case_samples(case["case_id"])["samples"]
+
+                if all_samples != []:
+                    add_sample(all_samples, case["case_id"], sample_id, file_id, cursor)
                     connection.commit()
 
                 # Verifica se il file è già presente nel database
@@ -160,24 +175,19 @@ def download_and_process_expression_data(db_params):
                     type_category_strategy_id = cursor.fetchone()
                     type_id = type_category_strategy_id[0]
 
-                    # !!!!!!!!!!!!!!! only the first one?!!?!
-                    all_samples = case['samples']
-                    if len(all_samples) > 1:
-                        print("found one case with many samples!!!!")
-
-                    sample_id = all_samples[0]['sample_id']
                     # Inserisci i dettagli del file nel database
 
                     cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_id))
-                    
-                    # Scarica i dati dal file e inseriscili nel database
-                    expression_data = download_and_process_file(file_id, type_id, samples_uuids)
 
-                    for entity in file_info["associated_entities"]: cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
+                    for entity in file_info["associated_entities"]:
+                        cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
                     connection.commit()
-                    
-                    if type_id == 1:
-                        if not skip_genes:
+
+                    # Scarica i dati dal file e inseriscili nel database
+                    if not skip_genes:
+                        expression_data = download_and_process_gene_expression_file(file_id, type_id)
+
+                        if type_id == 1:
                             for data_row in expression_data:
                                 # Inserimento dei dati di espressione genica nel database
                                 gene_id = data_row["gene_id"]
@@ -189,21 +199,23 @@ def download_and_process_expression_data(db_params):
                                 gene_type_id = cursor.fetchone()[0]
                                 # Inserisci il gene nel database
                                 cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
-                                
+
                                 if stranded_first != 0 and stranded_second != 0: cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
                             connection.commit()
-                    elif type_id == 2:
-                        # Inserimento dei dati di espressione proteica nel database
-                        for data_row in expression_data:
-                            agid = data_row["AGID"]
-                            expression = data_row["protein_expression"]
 
-                            # Inserisci la proteina nel database
-                            #cursor.execute(inserisci_proteina, (agid, data_row["lab_id"], data_row["catalog_number"], data_row["set_id"], data_row["peptide_target"]))
-                            
-                            if expression != "NaN": cursor.execute(inserisci_espressione_proteica, (file_id, agid, expression))
-                        connection.commit()
-                    print("File inserito nel database")
+                        elif type_id == 2:
+                            # Inserimento dei dati di espressione proteica nel database
+                            for data_row in expression_data:
+                                agid = data_row["AGID"]
+                                expression = data_row["protein_expression"]
+
+                                # Inserisci la proteina nel database
+                                #cursor.execute(inserisci_proteina, (agid, data_row["lab_id"], data_row["catalog_number"], data_row["set_id"], data_row["peptide_target"]))
+
+                                if expression != "NaN": cursor.execute(inserisci_espressione_proteica, (file_id, agid, expression))
+                            connection.commit()
+
+                        print("File inserito nel database")
                 # Ignora il conflitto e passa al prossimo file
                 else: print("Il file è gia presente nel database")
 
@@ -236,8 +248,8 @@ def download_and_process_expression_data(db_params):
         connection.close()
 
 # Funzione per inserire un nuovo progetto nel database
-def project(id, cursor):
-    project_url = "https://api.gdc.cancer.gov/projects/" + id
+def add_project(target_project_id, cursor):
+    project_url = "https://api.gdc.cancer.gov/projects/" + target_project_id
     inserisci_progetto = "INSERT INTO public.project VALUES (%s, %s) ON CONFLICT (project_id) DO NOTHING;"
 
     params = {
@@ -247,61 +259,56 @@ def project(id, cursor):
         "pretty": "true"
     }
 
-    print("requesting project... ", end="")
+    print("requesting project", project_url, end=" ")
     response = requests.get(project_url, params=params)
     print("got response")
 
     if response.status_code == 200:
         data = json.loads(response.content.decode("utf-8"))["data"]
 
-        cursor.execute(inserisci_progetto, (id, data["name"]))
+        cursor.execute(inserisci_progetto, (target_project_id, data["name"]))
         print("Progetto inserito nel database")
     else:
         print(f"Errore durante il download del progetto: {response.status_code}")
         return []
 
+def download_case_samples(target_case_id):
+    cases_url = "https://api.gdc.cancer.gov/cases/" + target_case_id
+
+    params = {
+        "filters": json.dumps(overall_filters),
+        # Puoi aggiungere altri campi che danno più info relative al caso
+        "fields": "files.submitter_id,submitter_id,demographic.ethnicity,demographic.gender,demographic.race,demographic.vital_status,primary_site,disease_type,samples.submitter_id,samples.sample_type,samples.sample_id,samples.sample_type_id,samples.tumor_code,samples.tumor_code_id,samples.tumor_descriptor,samples.portions.submitter_id,samples.portions.analytes.submitter_id,samples.files,samples.portions.analytes.concentration,samples.portions.analytes.aliquots.submitter_id,samples.portions.analytes.aliquots.concentration",
+        # samples.portions.slides.submitter_id
+        "expand": "true",
+        "format": "JSON",
+        "pretty": "true"
+    }
+
+    print("requesting case", cases_url, end=" ")
+    response = requests.get(cases_url, params=params)
+    print("got response")
+
+    if response.status_code == 200:
+        data = json.loads(response.content.decode("utf-8"))["data"]
+        return data
+    else:
+        return []
+
 # Funzione per inserire un nuovo caso nel database
-def cases(id, project_id, cursor):
-    cases_url = "https://api.gdc.cancer.gov/cases/" + id
+def add_case(target_case_id, project_id, cursor):
 
     cerca_sito = "SELECT site_id FROM primary_site WHERE site = %s"
     cerca_malattia = "SELECT disease_id FROM disease WHERE type = %s"
 
     inserisci_caso = "INSERT INTO public.case VALUES (%s, %s, %s, %s, %s, %s, %s, %s);"
 
-    # filters = {
-    #     "op": "and",
-    #     "content": [
-    #
-    #         {
-    #             "op": "=",
-    #             "content": {
-    #                 "field": "cases.samples.sample_type",
-    #                 "value": "Solid Tissue Normal"
-    #             }
-    #         }
-    #     ]
-    # }
+    data = download_case_samples(target_case_id)
 
-    params = {
-        # "filters": json.dumps(filters),
-        #Puoi aggiungere altri campi che danno più info relative al caso
-        "fields": "submitter_id,demographic.ethnicity,demographic.gender,demographic.race,demographic.vital_status,primary_site,disease_type,samples.submitter_id,samples.sample_type,samples.sample_id,samples.sample_type_id,samples.tumor_code,samples.tumor_code_id,samples.tumor_descriptor,samples.portions.submitter_id,samples.portions.analytes.submitter_id,samples.portions.analytes.concentration,samples.portions.analytes.aliquots.submitter_id,samples.portions.analytes.aliquots.concentration", #samples.portions.slides.submitter_id
-        "format": "JSON",
-        "pretty": "true"
-    }
+    if data != []:
 
-    samples_uuids = None
+        # case_id = data["submitter_id"]
 
-    print("requesting case... ", end="")
-    response = requests.get(cases_url, params=params)
-    print("got response")
-
-
-
-    if response.status_code == 200:
-        data = json.loads(response.content.decode("utf-8"))["data"]
-        case_id = data["submitter_id"]
         tipo_malattia = data["disease_type"]
 
         cursor.execute(cerca_sito, (data["primary_site"],))
@@ -309,18 +316,23 @@ def cases(id, project_id, cursor):
 
         cursor.execute(cerca_malattia, (tipo_malattia,))
         disease = cursor.fetchone()
-        if disease == None: 
+        if disease == None:
             cursor.execute("INSERT INTO disease(type) VALUES (%s);", (tipo_malattia,))
             cursor.execute(cerca_malattia, (tipo_malattia,))
             disease = cursor.fetchone()
 
-        if "demographic" in data: cursor.execute(inserisci_caso, (case_id, data["demographic"]["ethnicity"], data["demographic"]["gender"], data["demographic"]["race"], data["demographic"]["vital_status"], project_id, site[0], disease[0]))
-        else: cursor.execute(inserisci_caso, (case_id, None, None, None, None, project_id, site[0], disease[0]))
-        samples_uuids = samples(data["samples"], case_id, cursor)
+        if "demographic" in data:
+            cursor.execute(inserisci_caso, (target_case_id, data["demographic"]["ethnicity"], data["demographic"]["gender"], data["demographic"]["race"], data["demographic"]["vital_status"], project_id, site[0], disease[0]))
+        else:
+            cursor.execute(inserisci_caso, (target_case_id, None, None, None, None, project_id, site[0], disease[0]))
+
         print("Caso inserito nel database")
+
+        return data["samples"]
+
     else: 
         print(f"Errore durante il download del caso: {response.status_code}")
-    return samples_uuids
+        return []
 
 def sample_print(sample):
     if "sample_type" in sample:
@@ -345,7 +357,7 @@ def sample_print(sample):
         print("tumor_descriptor not present!", end="\n\n")
         
 # Funzione per inserire informazioni sui campioni nel database
-def samples(samples, case_id, cursor):
+def add_sample(samples_list, case_id, target_sample_id, target_file_id, cursor):
     inserisci_biospecie = "INSERT INTO biospecimen VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING;"
     inserisci_tumore = "INSERT INTO tumor VALUES (%s, %s, %s) ON CONFLICT (tumor_code_id) DO NOTHING;"
     inserisci_tipo_campione = "INSERT INTO sample_type VALUES (%s, %s) ON CONFLICT (type_id) DO NOTHING;"
@@ -353,127 +365,100 @@ def samples(samples, case_id, cursor):
     inserisci_porzione = "INSERT INTO portion VALUES (%s, %s) ON CONFLICT (portion_id) DO NOTHING;"
     inserisci_analita = "INSERT INTO analyte VALUES (%s, %s, %s) ON CONFLICT (analyte_id) DO NOTHING;"
     inserisci_aliquota = "INSERT INTO aliquote VALUES (%s, %s, %s) ON CONFLICT (aliquote_id) DO NOTHING;"
+    select_sample = "SELECT * FROM sample WHERE sample_id = %s"
     inserisci_slide = "INSERT INTO slide VALUES (%s, %s)"
-    samples_uuids = []
-    for sample in samples:
-        samples_uuids.append("uuid:v1:" + sample["sample_id"])
+    print("*** adding sample", target_sample_id)
+    for sample in samples_list:
+
         # sample_print(sample)
         # why is the submitter id used as sample id?
         sample_id = sample["sample_id"]
+
+        if sample_id == target_sample_id:
         
-        if "tumor_code_id" in sample and sample["tumor_code_id"] != None: 
-            tumor_code = sample["tumor_code_id"]
-            cursor.execute(inserisci_tumore, (tumor_code, sample["tumor_code"], sample["tumor_descriptor"]))
-        else: tumor_code = None
-        if "sample_type_id" in sample and sample["sample_type_id"] != None: 
-            type_id = sample["sample_type_id"]
-            cursor.execute(inserisci_tipo_campione, (type_id, sample["sample_type"]))
-        else: type_id = None   
+            if "tumor_code_id" in sample and sample["tumor_code_id"] != None:
+                tumor_code = sample["tumor_code_id"]
+                cursor.execute(inserisci_tumore, (tumor_code, sample["tumor_code"], sample["tumor_descriptor"]))
+            else:
+                tumor_code = None
 
-        cursor.execute(inserisci_biospecie, (sample_id, case_id, 1))
-        cursor.execute(inserisci_campione, (sample_id, type_id, tumor_code))
-        if "portions" in sample:
-            for portion in sample["portions"]:
-                if "submitter_id" in portion: 
-                    portion_id = portion["submitter_id"]
-                else: portion_id = 1
+            if "sample_type_id" in sample and sample["sample_type_id"] != None:
+                type_id = sample["sample_type_id"]
+                cursor.execute(inserisci_tipo_campione, (type_id, sample["sample_type"]))
+            else:
+                type_id = None
 
-                cursor.execute(inserisci_biospecie, (portion_id, case_id, 2))
-                cursor.execute(inserisci_porzione, (portion_id, sample_id))
-                if "analytes" in portion:
-                    for analyte in portion["analytes"]:
-                        if "submitter_id" in analyte: 
-                            analyte_id = analyte["submitter_id"]
-                            concentration = analyte["concentration"]
-                        else: 
-                            analyte_id = 1
-                            concentration = None
+            cursor.execute(inserisci_biospecie, (sample_id, case_id, 1))
 
-                        cursor.execute(inserisci_biospecie, (analyte_id, case_id, 3))
-                        cursor.execute(inserisci_analita, (analyte_id, portion_id, concentration))
-                        if "aliquots" in analyte:
-                            for aliquote in analyte["aliquots"]:
-                                aliquote_id = aliquote["submitter_id"]
+            cursor.execute(select_sample, (sample_id,))
+            result = cursor.fetchone()
+            if result is None:
+                cursor.execute(inserisci_campione, (sample_id, type_id, tumor_code))
+            else:
+                print("******** sample", sample_id, "already present!")
 
-                                if "concentration" in aliquote: concentration = aliquote["concentration"]
-                                else: concentration = None
+            print("added sample", sample_id)
+            if "portions" in sample:
+                for portion in sample["portions"]:
+                    if "submitter_id" in portion:
+                        portion_id = portion["submitter_id"]
+                    else: portion_id = 1
 
-                                cursor.execute(inserisci_biospecie, (aliquote_id, case_id, 4))
-                                cursor.execute(inserisci_aliquota, (aliquote_id, analyte_id, concentration))
-    return samples_uuids
+                    cursor.execute(inserisci_biospecie, (portion_id, case_id, 2))
+                    cursor.execute(inserisci_porzione, (portion_id, sample_id))
+                    if "analytes" in portion:
+                        for analyte in portion["analytes"]:
+                            if "submitter_id" in analyte:
+                                analyte_id = analyte["submitter_id"]
+                                concentration = analyte["concentration"]
+                            else:
+                                analyte_id = 1
+                                concentration = None
 
-                #if "slides" in portion:
-                    #for slide in portion["slides"]:
-                        #slide_id = slide["submitter_id"]
+                            cursor.execute(inserisci_biospecie, (analyte_id, case_id, 3))
+                            cursor.execute(inserisci_analita, (analyte_id, portion_id, concentration))
+                            if "aliquots" in analyte:
+                                for aliquote in analyte["aliquots"]:
+                                    aliquote_id = aliquote["submitter_id"]
 
-                        #cursor.execute(inserisci_biospecie, (slide_id, case_id, 5))
-                        #cursor.execute(inserisci_slide, (slide_id, sample_id))
+                                    if "concentration" in aliquote: concentration = aliquote["concentration"]
+                                    else: concentration = None
+
+                                    cursor.execute(inserisci_biospecie, (aliquote_id, case_id, 4))
+                                    cursor.execute(inserisci_aliquota, (aliquote_id, analyte_id, concentration))
+
+                    #if "slides" in portion:
+                        #for slide in portion["slides"]:
+                            #slide_id = slide["submitter_id"]
+
+                            #cursor.execute(inserisci_biospecie, (slide_id, case_id, 5))
+                            #cursor.execute(inserisci_slide, (slide_id, sample_id))
+
+
 
 # Funzione per scaricare e processare un file specifico
-def download_and_process_file(file_id, data_id, samples_uuids):
-    '''
-    # Set the sample ID
-    sample_id = "your_sample_id_here"
+def download_and_process_gene_expression_file(file_id, datatype_id):
 
-    # Set the API endpoint and parameters
-    url = "https://api.gdc.cancer.gov/files"
-    params = {
-        "sample_id": sample_id,
-        "data_category": "Transcriptome Profiling"
-    }
+            file_url = "https://api.gdc.cancer.gov/data/" + file_id
 
-    # Send the request to retrieve the list of files
-    response = requests.get(url, params=params)
+            print("requesting file", file_url, end=" ")
+            response = requests.get(file_url)
+            print("got response")
 
-    # Iterate over the response and retrieve all the file data
-    for file in response.json()["data"]["hits"]:
-        file_id = file["file_id"]
-        file_name = file["file_name"]
-        file_size = file["file_size"]
-        data_type = file["data_type"]
-        data_category = file["data_category"]
+            if response.status_code == 200:
+                # Elabora i dati dal file scaricato
+                if datatype_id == 1: data = pd.read_csv(StringIO(response.text), sep="\t", comment="#", skiprows=[2,3,4,5])
+                elif datatype_id == 2: data = pd.read_csv(StringIO(response.text), sep="\t", comment="#")
+                else:
+                    print("unknown data type while processing file:", datatype_id)
+                    return []
 
-        # Retrieve the file data
-        file_url = f"https://api.gdc.cancer.gov/files/{file_id}"
-        file_response = requests.get(file_url, params={"download": "true"})
-
-        # Save the file data to a file
-        with open(f"{file_name}.tsv", "w") as f:
-            f.write(file_response.text)
-
-        print(f"Retrieved file {file_name} ({file_size} bytes) with data type {data_type} and category {data_category}")
-
-    '''
-
-
-    # file_url = "https://api.gdc.cancer.gov/data/" + file_id
-
-    # Set API endpoint and parameters
-    file_url = "https://api.gdc.cancer.gov/data"
-    params = {
-        "data_type": "Gene Expression Quantification",
-        "sample_ids": ",".join(samples_uuids),
-        "format": "TSV"
-    }
-
-    # Send GET request
-    response = requests.post(file_url, params=params)
-
-    print("requesting file... ", end="")
-    response = requests.get(file_url)
-    print("got response")
-
-    if response.status_code == 200:
-        # Elabora i dati dal file scaricato
-        if data_id == 1: data = pd.read_csv(StringIO(response.text), sep="\t", comment="#", skiprows=[2,3,4,5])
-        elif data_id == 2: data = pd.read_csv(StringIO(response.text), sep="\t", comment="#")
-        
-        # Trasforma i dati in una lista di dizionari
-        expression_data = data.to_dict(orient="records")
-        return expression_data
-    else:
-        print(f"Errore durante il download del file: {response.status_code}")
-        return []
+                # Trasforma i dati in una lista di dizionari
+                expression_data = data.to_dict(orient="records")
+                return expression_data
+            else:
+                print(f"Errore durante il download del file: {response.status_code}")
+                return []
 
 if __name__ == "__main__":
     answer = input("do you want to delete the database? (y/N) ")
