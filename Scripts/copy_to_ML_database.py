@@ -22,16 +22,16 @@ to_db = {
     'port' : 5432           # Porta di connessione
 }
 
-def get_measurement_id(name, unit, to_cursor):
-    get_measurement_id = "SELECT measurement_id FROM measurement_type where name = '{}' AND unit = '{}';"
-    add_measurement_id = "INSERT INTO measurement_type (name, unit) VALUES ('{}', '{}') ON CONFLICT (name, unit) DO NOTHING;"
+def get_measurement_id(name1, name2, unit, to_cursor):
+    get_measurement_id = "SELECT measurement_id FROM measurement_type where name1 = '{}' AND name2 = '{}' AND unit = '{}';"
+    add_measurement_id = "INSERT INTO measurement_type (name1, name2, unit) VALUES ('{}', '{}', '{}') ON CONFLICT (name1, name2, unit) DO NOTHING;"
 
     # add the measurement type
-    query = add_measurement_id.format(name, unit)
+    query = add_measurement_id.format(name1, name2, unit)
     to_cursor.execute(query)
     
     # and get its id
-    query = get_measurement_id.format(name, unit)
+    query = get_measurement_id.format(name1, name2, unit)
     to_cursor.execute(query)
     measurement_id = to_cursor.fetchone()[0]
     
@@ -50,7 +50,7 @@ def copy_to_ML_database(from_db_params, to_db_params):
         
         print("Connessione riuscita")
 
-        get_gene_expressions = "SELECT * from gene_expression_file where analysis = '{}'"
+        get_gene_expressions = "SELECT g.gene_id, g.name, gef.tpm, gef.fpkm, gef.fpkm_uq from gene_expression_file as gef, gene as g where gef.gene = g.gene_id  and analysis = '{}'"
         
         get_sample_id = "SELECT sample_id FROM sample_type WHERE original_sample_id = '{}'"
         add_sample_id = "INSERT INTO sample_type (original_sample_id) VALUES ('{}') ON CONFLICT (original_sample_id) DO NOTHING;"
@@ -93,8 +93,8 @@ def copy_to_ML_database(from_db_params, to_db_params):
 
                 # for each of them
                 for gene_expression in from_cursor:
-                    analysis = gene_expression[0]
-                    gene = gene_expression[1]
+                    gene_ensemble = gene_expression[0]
+                    gene_id = gene_expression [1]
                     tpm = gene_expression[2]
                     
                     # genes.add(gene)
@@ -114,7 +114,7 @@ def copy_to_ML_database(from_db_params, to_db_params):
                         
                     sample_id = sample_id[0]
                     
-                    measurement_id = get_measurement_id(gene, "tpm", to_cursor)
+                    measurement_id = get_measurement_id(gene_ensemble, gene_id, "tpm", to_cursor)
                     
                     # add the measurement itself
                     query = add_measurement.format(int(sample_id), int(measurement_id), tpm)
@@ -127,7 +127,7 @@ def copy_to_ML_database(from_db_params, to_db_params):
                 from_cursor.execute(query)
                 sample_type = from_cursor.fetchone()[0]
                 
-                measurement_id = get_measurement_id("sample_type", "int", to_cursor)
+                measurement_id = get_measurement_id("sample_type", "", "int", to_cursor)
                 
                 query = add_measurement.format(int(sample_id), int(measurement_id), sample_type)
                 to_cursor.execute(query)
