@@ -97,7 +97,7 @@ def download_and_process_expression_data(db_params):
             # Puoi aggiungere altri campi che danno più info relative al file
             "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id,cases.samples,cases.samples.sample_id,cases.samples.sample_type,files.cases.samples",
             "format": "JSON",
-            "size": "1",  # Numero massimo di file da scaricare per richiesta
+            "size": "1600",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
         
