@@ -133,6 +133,12 @@ def download_and_process_expression_data(db_params):
             print("hit", hit_n + 1, "of", len(hits_data))
             file_id = file_info["id"]
 
+            # Verifica se il file è già presente nel database
+            cursor.execute(cerca_file, (file_id,))
+            result = cursor.fetchone()
+            if result[0] != 0:
+                continue
+
             all_cases = file_info["cases"]
             if len(all_cases) > 1:
                 print("found a file with more than one case!!!!!!!")
