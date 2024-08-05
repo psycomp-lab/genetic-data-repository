@@ -57,6 +57,8 @@ def copy_to_ML_database(from_db_params, to_db_params):
         
         get_sample_type = "SELECT type FROM sample WHERE sample_id = '{}'"
         
+        get_sample_site = 'select s.sample_id, c.site from analysis_entity ae, sample s, biospecimen b, "case" c where ae.biospecimen_id = s.sample_id and ae.biospecimen_id = b.id and b."case" = c.case_id and s.sample_id = \'{}\';'
+
         add_measurement = "INSERT INTO measurement (sample_id, measurement_id, value) VALUES ({}, {}, '{}')"
         
         get_analysis_from = "SELECT file_id, sample_id FROM analysis"
@@ -130,6 +132,16 @@ def copy_to_ML_database(from_db_params, to_db_params):
                 measurement_id = get_measurement_id("sample_type", "", "int", to_cursor)
                 
                 query = add_measurement.format(int(sample_id), int(measurement_id), sample_type)
+                to_cursor.execute(query)
+
+                # get the sample site
+                query = get_sample_site.format(samples_iter)
+                from_cursor.execute(query)
+                sample_site = from_cursor.fetchone()[1]
+
+                measurement_id = get_measurement_id("sample_site", "", "int", to_cursor)
+
+                query = add_measurement.format(int(sample_id), int(measurement_id), sample_site)
                 to_cursor.execute(query)
                 
             else:
