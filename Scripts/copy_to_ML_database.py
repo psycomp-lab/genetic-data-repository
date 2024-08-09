@@ -26,9 +26,13 @@ def get_measurement_id(name1, name2, unit, to_cursor):
     get_measurement_id = "SELECT measurement_id FROM measurement_type where name1 = '{}' AND name2 = '{}' AND unit = '{}';"
     add_measurement_id = "INSERT INTO measurement_type (name1, name2, unit) VALUES ('{}', '{}', '{}') ON CONFLICT (name1, name2, unit) DO NOTHING;"
 
-    # add the measurement type
-    query = add_measurement_id.format(name1, name2, unit)
+    query = get_measurement_id.format(name1, name2, unit)
     to_cursor.execute(query)
+
+    if to_cursor.fetchone() is None:
+        # add the measurement type
+        query = add_measurement_id.format(name1, name2, unit)
+        to_cursor.execute(query)
     
     # and get its id
     query = get_measurement_id.format(name1, name2, unit)
@@ -78,18 +82,30 @@ def copy_to_ML_database(from_db_params, to_db_params):
             
         # for each pair (analysis, sample)
         for index in range(len(all_samples)):
-            
+            print("sample", index + 1, "of", len(all_samples))
             analysis_iter = all_analysis[index]
             samples_iter = all_samples[index]
-            
+            print("analysis:", analysis_iter, "sample:", samples_iter)
+
+            print("checking if sample", samples_iter, "exists")
             # get the sample id in the new database, if exists
             query = get_sample_to.format(samples_iter)
             to_cursor.execute(query)
             
             # if it does not exist, add all the gene expression values for that sample
             if to_cursor.fetchone() is None:
-                
+                print("sample does not exist, so add it")
+
+                query = add_sample_id.format(samples_iter)
+                to_cursor.execute(query)
+                query = get_sample_id.format(samples_iter)
+                to_cursor.execute(query)
+                sample_id = to_cursor.fetchone()[0]
+
+                print("sample id for", samples_iter, "is", sample_id)
+
                 # get the gene expression values
+                print("get all the genes of the analysis", analysis_iter)
                 query = get_gene_expressions.format(analysis_iter)
                 from_cursor.execute(query)
 
@@ -98,23 +114,6 @@ def copy_to_ML_database(from_db_params, to_db_params):
                     gene_ensemble = gene_expression[0]
                     gene_id = gene_expression [1]
                     tpm = gene_expression[2]
-                    
-                    # genes.add(gene)
-
-                    # check if the sample exists
-                    query = get_sample_id.format(samples_iter)
-                    to_cursor.execute(query)
-                    sample_id = to_cursor.fetchone()
-                    
-                    # if it does not exist, add it and get its id
-                    if sample_id is None:
-                        query = add_sample_id.format(samples_iter)
-                        to_cursor.execute(query)
-                        query = get_sample_id.format(samples_iter)
-                        to_cursor.execute(query)
-                        sample_id = to_cursor.fetchone()
-                        
-                    sample_id = sample_id[0]
                     
                     measurement_id = get_measurement_id(gene_ensemble, gene_id, "tpm", to_cursor)
                     
@@ -125,12 +124,15 @@ def copy_to_ML_database(from_db_params, to_db_params):
                 # finally, add the sample type
                 
                 # get the sample type
+                print("getting sample type")
                 query = get_sample_type.format(samples_iter)
                 from_cursor.execute(query)
                 sample_type = from_cursor.fetchone()[0]
-                
+
+                print("adding it to the measurements")
                 measurement_id = get_measurement_id("sample_type", "", "int", to_cursor)
-                
+
+                print("adding sample type value for sample id", sample_id, "(measurement id is", measurement_id, ")")
                 query = add_measurement.format(int(sample_id), int(measurement_id), sample_type)
                 to_cursor.execute(query)
 
@@ -151,81 +153,6 @@ def copy_to_ML_database(from_db_params, to_db_params):
         
         print(len(genes))
             
-        
-        '''# Elaborazione dei dati e inserimento nel database
-        for file_info in json.loads(response.content.decode("utf-8"))["data"]["hits"]:
-            file_id = file_info["id"]
-            if len(file_info["cases"]) > 1:
-                print("found a file with more than one case!")
-            for case in file_info["cases"]:
-                project_id = case["project"]["project_id"]
-
-                # Verifica se il progetto è già presente nel database
-                cursor.execute(cerca_progetto, (project_id,))
-                result = cursor.fetchone()
-                if result[0] == 0: 
-                    # Se il progetto non è presente, esegui la funzione project() per inserirlo
-                    project(project_id, cursor)
-                    connection.commit()
-
-                # Verifica se il caso è già presente nel database
-                cursor.execute(cerca_caso, (case["submitter_id"],))
-                result = cursor.fetchone()
-                if result[0] == 0: 
-                    # Se il caso non è presente, esegui la funzione cases() per inserirlo
-                    cases(case["case_id"], project_id, cursor)
-                    connection.commit()
-
-                # Verifica se il file è già presente nel database
-                cursor.execute(cerca_file, (file_id,))
-                result = cursor.fetchone()
-                if result[0] == 0:
-                    cursor.execute(cerca_tipo_categoria_strategia, (file_info["data_type"], file_info["data_category"], file_info["experimental_strategy"],))
-                    type_category_strategy_id = cursor.fetchone()
-                    type_id = type_category_strategy_id[0]
-
-                    # Inserisci i dettagli del file nel database
-                    cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2]))
-                    
-                    # Scarica i dati dal file e inseriscili nel database
-                    expression_data = download_and_process_file(file_id, type_id)
-
-                    for entity in file_info["associated_entities"]: cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
-                    connection.commit()
-                    
-                    if type_id == 1:
-                        for data_row in expression_data:
-                            # Inserimento dei dati di espressione genica nel database
-                            gene_id = data_row["gene_id"]
-                            stranded_first = data_row["stranded_first"]
-                            stranded_second = data_row["stranded_second"]
-
-                            # Verifica se il tipo di gene è già presente nel database
-                            cursor.execute(cerca_tipo_gene, (data_row["gene_type"],))
-                            gene_type_id = cursor.fetchone()[0]
-                            # Inserisci il gene nel database
-                            cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
-                            
-                            if stranded_first != 0 and stranded_second != 0: cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
-                        connection.commit()
-                    elif type_id == 2:
-                        # Inserimento dei dati di espressione proteica nel database
-                        for data_row in expression_data:
-                            agid = data_row["AGID"]
-                            expression = data_row["protein_expression"]
-
-                            # Inserisci la proteina nel database
-                            #cursor.execute(inserisci_proteina, (agid, data_row["lab_id"], data_row["catalog_number"], data_row["set_id"], data_row["peptide_target"]))
-                            
-                            if expression != "NaN": cursor.execute(inserisci_espressione_proteica, (file_id, agid, expression))
-                        connection.commit()
-                    print("File inserito nel database")
-                # Ignora il conflitto e passa al prossimo file
-                else: print("Il file è gia presente nel database")
-
-        # Commit della transazione        
-        connection.commit()
-        print(f"Download, elaborazione e inserimento dei dati completati.")'''
 
     except psycopg2.Error as db_error:
         # Gestione degli errori del database
