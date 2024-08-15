@@ -23,8 +23,8 @@ overall_filters = {
             "op": "=",
             "content": {
                 "field": "cases.primary_site",
-                # "value": "Breast"
-                "value": "Liver and intrahepatic bile ducts"
+                "value": "Breast"
+                # "value": "Liver and intrahepatic bile ducts"
             }
         },
 
@@ -90,9 +90,9 @@ def download_data(url, req_timeout, req_tries, parameters=None):
 def download_and_process_expression_data(db_params):
     # Definizioni delle query SQL utilizzate nel codice
 
-    cerca_progetto = "SELECT COUNT(*) FROM project WHERE project_id = %s"
-    cerca_caso = "SELECT COUNT(*) FROM public.case WHERE case_id = %s"
-    cerca_file = "SELECT COUNT(*) FROM analysis WHERE file_id = %s"
+    cerca_progetto = "SELECT * FROM project WHERE project_id = %s"
+    cerca_caso = "SELECT * FROM public.case WHERE case_id = %s"
+    cerca_file = "SELECT * FROM analysis WHERE file_id = %s"
     cerca_tipo_categoria_strategia = "SELECT type_id, category_id, strategy_id FROM data_type, data_category, experimental_strategy WHERE type = %s AND category = %s AND strategy = %s"
     cerca_tipo_gene = "SELECT type_id FROM gene_type WHERE type = %s"
 
@@ -114,17 +114,9 @@ def download_and_process_expression_data(db_params):
         connection.autocommit = False
         
         # Ora sei connesso al database
-        print("Connessione riuscita")
+        print("database connection done")
 
-        # URL dell'API GDC per scaricare i file corrispondenti alle analisi
         gdc_api_url = "https://api.gdc.cancer.gov/files"
-
-        #lista_file = cursor.execute("SELECT file_id FROM analysis")
-        #results = cursor.fetchall()
-        #file_ids = [result[0] for result in results]
-
-        # Scaricamento dei dati
-
 
         params = {
             "filters": json.dumps(overall_filters),
@@ -134,7 +126,6 @@ def download_and_process_expression_data(db_params):
             "size": "1600",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
-
 
         response = download_data(gdc_api_url, requests_timeout, requests_tries, params)
 
@@ -154,132 +145,128 @@ def download_and_process_expression_data(db_params):
                 # Verifica se il file è già presente nel database
                 cursor.execute(cerca_file, (file_id,))
                 result = cursor.fetchone()
-                if result[0] != 0:
+                if result is not None:
+                    print("file", file_id, "already in the database")
                     continue
 
                 all_cases = file_info["cases"]
                 if len(all_cases) > 1:
                     print("found a file with more than one case!!!!!!!")
 
-                for case in all_cases:
-                    project_id = case["project"]["project_id"]
+                # as we are looping through, a file can be associated to one case only
+                case = all_cases[0]
 
-                    # Verifica se il progetto è già presente nel database
-                    cursor.execute(cerca_progetto, (project_id,))
+                project_id = case["project"]["project_id"]
+
+                # check if the project is already in the database
+                cursor.execute(cerca_progetto, (project_id,))
+                result = cursor.fetchone()
+                if result is None:
+                    project_present = False
+                else:
+                    project_present = True
+                    print("project", project_id, "already in the database")
+
+                if not project_present:
+                    project_present = add_project(project_id, cursor)
+
+                if project_present:
+
+                    # there is always one sample per case, as we are downloading files
+                    # a file is always associated to a sample
+                    sample_id = case["samples"][0]['sample_id']
+
+                    # get all the samples associated to the case
+                    case_data = download_case_data(case["case_id"])
+
+                    if "samples" in case_data:
+                        all_samples = case_data["samples"]
+                    else:
+                        all_samples = []
+
+                    # Verifica se il caso è già presente nel database
+                    # cursor.execute(cerca_caso, (case["submitter_id"],))
+                    cursor.execute(cerca_caso, (case["case_id"],))
                     result = cursor.fetchone()
-                    if result[0] == 0:
-                        project_present = False
-                    else:
-                        project_present = True
 
-                    if not project_present:
-                        project_present = add_project(project_id, cursor)
+                    if result is None:
+                        add_case(case_data, case["case_id"], project_id, cursor)
 
-                    if project_present:
+                    sample_submitter_id = None
+                    if all_samples != []:
+                        sample_submitter_id = add_sample(all_samples, case["case_id"], sample_id, file_id, cursor)
 
-                        # there is always one sample per case, as we are downloading files
-                        # a file is always associated to a sample
-                        sample_id = case["samples"][0]['sample_id']
+                        # # Verifica se il file è già presente nel database
+                        # cursor.execute(cerca_file, (file_id,))
+                        # result = cursor.fetchone()
+                        #
+                        # if result is None:
+                        cursor.execute(cerca_tipo_categoria_strategia, (file_info["data_type"], file_info["data_category"], file_info["experimental_strategy"],))
+                        type_category_strategy_id = cursor.fetchone()
+                        type_id = type_category_strategy_id[0]
 
-                        # get all the samples associated to the case
-                        case_data = download_case_data(case["case_id"])
+                        # Inserisci i dettagli del file nel database
 
-                        if "samples" in case_data:
-                            all_samples = case_data["samples"]
-                        else:
-                            all_samples = []
+                        cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_submitter_id))
 
-                        # Verifica se il caso è già presente nel database
-                        # cursor.execute(cerca_caso, (case["submitter_id"],))
-                        cursor.execute(cerca_caso, (case["case_id"],))
-                        result = cursor.fetchone()
+                        cursor.execute(inserisci_entita_analisi, (file_id, sample_submitter_id))
+                        for entity in file_info["associated_entities"]:
+                            cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
 
-                        if result[0] == 0:
-                            add_case(case_data, case["case_id"], project_id, cursor)
-                            # connection.commit()
-
-                        sample_submitter_id = None
-                        if all_samples != []:
-                            sample_submitter_id = add_sample(all_samples, case["case_id"], sample_id, file_id, cursor)
-                            # connection.commit()
-
-                            # Verifica se il file è già presente nel database
-                            cursor.execute(cerca_file, (file_id,))
-                            result = cursor.fetchone()
-
-                            if result[0] == 0:
-                                cursor.execute(cerca_tipo_categoria_strategia, (file_info["data_type"], file_info["data_category"], file_info["experimental_strategy"],))
-                                type_category_strategy_id = cursor.fetchone()
-                                type_id = type_category_strategy_id[0]
-
-                                # Inserisci i dettagli del file nel database
-
-                                cursor.execute(inserisci_analisi, (file_id, file_info["file_name"], file_info["file_size"], file_info["created_datetime"], file_info["updated_datetime"], project_id, type_id, type_category_strategy_id[1], type_category_strategy_id[2], sample_submitter_id))
-
-                                cursor.execute(inserisci_entita_analisi, (file_id, sample_submitter_id))
-                                for entity in file_info["associated_entities"]:
-                                    cursor.execute(inserisci_entita_analisi, (file_id, entity["entity_submitter_id"]))
-
-                                # Scarica i dati dal file e inseriscili nel database
-                                if not skip_genes:
-                                    expression_data = download_gene_expression_file(file_id, type_id)
-                                    if expression_data == []:
-                                        print("problem downloading file", file_id)
-                                        print("rolling back")
-                                        connection.rollback()
-                                    else:
-                                        if type_id == 1:
-                                            for data_row in expression_data:
-                                                # Inserimento dei dati di espressione genica nel database
-                                                gene_id = data_row["gene_id"]
-                                                stranded_first = data_row["stranded_first"]
-                                                stranded_second = data_row["stranded_second"]
-
-                                                # Verifica se il tipo di gene è già presente nel database
-                                                cursor.execute(cerca_tipo_gene, (data_row["gene_type"],))
-                                                gene_type_id = cursor.fetchone()[0]
-                                                # Inserisci il gene nel database
-                                                cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
-
-                                                if stranded_first != 0 and stranded_second != 0:
-                                                    cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
-
-                                        elif type_id == 2:
-                                            # Inserimento dei dati di espressione proteica nel database
-                                            for data_row in expression_data:
-                                                agid = data_row["AGID"]
-                                                expression = data_row["protein_expression"]
-
-                                                # Inserisci la proteina nel database
-                                                #cursor.execute(inserisci_proteina, (agid, data_row["lab_id"], data_row["catalog_number"], data_row["set_id"], data_row["peptide_target"]))
-
-                                                if expression != "NaN":
-                                                    cursor.execute(inserisci_espressione_proteica, (file_id, agid, expression))
-                                        print("File inserito nel database")
-
-                                connection.commit()
-
-                            # Ignora il conflitto e passa al prossimo file
-                            else:
-                                print("file is already in the database")
+                        # Scarica i dati dal file e inseriscili nel database
+                        if not skip_genes:
+                            expression_data = download_gene_expression_file(file_id, type_id)
+                            if expression_data == []:
+                                print("problem downloading file", file_id)
+                                print("rolling back")
                                 connection.rollback()
-                        else:
-                            print("problem downloading case samples")
-                            connection.rollback()
+                            else:
+                                if type_id == 1:
+                                    for data_row in expression_data:
+                                        # Inserimento dei dati di espressione genica nel database
+                                        gene_id = data_row["gene_id"]
+                                        stranded_first = data_row["stranded_first"]
+                                        stranded_second = data_row["stranded_second"]
+
+                                        # Verifica se il tipo di gene è già presente nel database
+                                        cursor.execute(cerca_tipo_gene, (data_row["gene_type"],))
+                                        gene_type_id = cursor.fetchone()[0]
+                                        # Inserisci il gene nel database
+                                        cursor.execute(inserisci_gene, (gene_id, data_row["gene_name"], gene_type_id))
+
+                                        if stranded_first != 0 and stranded_second != 0:
+                                            cursor.execute(inserisci_espressione_genica, (file_id, gene_id, data_row["tpm_unstranded"], data_row["fpkm_unstranded"], data_row["fpkm_uq_unstranded"], data_row["unstranded"], stranded_first, stranded_second))
+
+                                elif type_id == 2:
+                                    # Inserimento dei dati di espressione proteica nel database
+                                    for data_row in expression_data:
+                                        agid = data_row["AGID"]
+                                        expression = data_row["protein_expression"]
+
+                                        # Inserisci la proteina nel database
+                                        #cursor.execute(inserisci_proteina, (agid, data_row["lab_id"], data_row["catalog_number"], data_row["set_id"], data_row["peptide_target"]))
+
+                                        if expression != "NaN":
+                                            cursor.execute(inserisci_espressione_proteica, (file_id, agid, expression))
+                                print("added expression file", file_id)
+                        connection.commit()
+                        # else:
+                        #     print("file is already in the database (this should never happen!)")
+                        #     connection.rollback()
                     else:
-                        print("problem adding project")
+                        print("problem downloading case samples")
                         connection.rollback()
-        # Commit della transazione        
-        # connection.commit()
+                else:
+                    print("problem adding project")
+                    connection.rollback()
+
         print(f"Download, elaborazione e inserimento dei dati completati.")
 
     except psycopg2.Error as db_error:
-        # Gestione degli errori del database
         connection.rollback()
-        print(f"Errore nel database: {db_error}")
+        print(f"database error: {db_error}")
 
     except Exception as error:
-        # Gestione generica degli errori
         connection.rollback()
         print(f"Errore sconosciuto: {error}")
 
@@ -365,7 +352,7 @@ def add_case(target_case_data, target_case_id, project_id, cursor):
         else:
             cursor.execute(inserisci_caso, (target_case_id, None, None, None, None, project_id, site[0], disease[0]))
 
-        print("added case", target_case_id, "to database")
+        print("added case", target_case_id)
 
 
 def sample_print(sample):
