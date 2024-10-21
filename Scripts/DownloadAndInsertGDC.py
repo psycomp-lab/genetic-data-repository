@@ -5,6 +5,7 @@ import json
 import pandas as pd
 from io import StringIO
 from tools import drop_database, populate_database
+import traceback
 
 # Parametri per la connessione al database PostgreSQL
 db_genetic_data_params = {
@@ -23,7 +24,7 @@ overall_filters = {
             "op": "=",
             "content": {
                 "field": "cases.primary_site",
-                "value": "Breast"
+                "value": "bronchus and lung"
             }
         },
 
@@ -97,7 +98,7 @@ def download_and_process_expression_data(db_params):
             # Puoi aggiungere altri campi che danno più info relative al file
             "fields": "file_name,file_size,created_datetime,updated_datetime,data_type,experimental_strategy,data_category,cases.project.project_id,cases.case_id,cases.submitter_id,associated_entities.entity_submitter_id,cases.samples,cases.samples.sample_id,cases.samples.sample_type,files.cases.samples",
             "format": "JSON",
-            "size": "1600",  # Numero massimo di file da scaricare per richiesta
+            "size": "2500",  # Numero massimo di file da scaricare per richiesta
             "pretty": "true"
         }
         
@@ -245,6 +246,7 @@ def download_and_process_expression_data(db_params):
         # Gestione generica degli errori
         connection.rollback()
         print(f"Errore sconosciuto: {error}")
+        traceback.print_tb(error.__traceback__)
 
     finally:
         # Ripristina l'autocommit
@@ -326,6 +328,8 @@ def add_case(target_case_id, project_id, cursor):
     if data != []:
 
         # case_id = data["submitter_id"]
+        if "disease_type" not in data:
+            data["disease_type"] = "unknown"
 
         tipo_malattia = data["disease_type"]
 
