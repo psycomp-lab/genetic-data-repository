@@ -56,8 +56,8 @@ def copy_to_ML_database(from_db_params, to_db_params):
 
         get_gene_expressions = "SELECT g.gene_id, g.name, gef.tpm, gef.fpkm, gef.fpkm_uq from gene_expression_file as gef, gene as g where gef.gene = g.gene_id  and analysis = '{}'"
         
-        get_sample_id = "SELECT sample_id FROM sample_type WHERE original_sample_id = '{}'"
-        add_sample_id = "INSERT INTO sample_type (original_sample_id) VALUES ('{}') ON CONFLICT (original_sample_id) DO NOTHING;"
+        get_sample_id = "SELECT sample_id FROM sample_id_type WHERE original_sample_id = '{}'"
+        add_sample_id = "INSERT INTO sample_id_type (original_sample_id) VALUES ('{}') ON CONFLICT (original_sample_id) DO NOTHING;"
         
         get_sample_type = "SELECT type FROM sample WHERE sample_id = '{}'"
         
@@ -67,7 +67,7 @@ def copy_to_ML_database(from_db_params, to_db_params):
         
         get_analysis_from = "SELECT file_id, sample_id FROM analysis"
         
-        get_sample_to = "SELECT * FROM sample_type WHERE original_sample_id = '{}'"
+        get_sample_to = "SELECT * FROM sample_id_type WHERE original_sample_id = '{}'"
         
         genes = set()
         
